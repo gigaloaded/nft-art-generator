@@ -13,6 +13,7 @@ const { readFile, writeFile, readdir } = require("fs").promises;
 const mergeImages = require('merge-images');
 const { Image, Canvas } = require('canvas');
 const ImageDataURI = require('image-data-uri');
+const { execSync } = require("child_process");
 
 //SETTINGS
 let basePath;
@@ -32,6 +33,7 @@ let config = {
   generateMetadata: null,
 };
 let loadedConfig = false;
+let checkpointData = {};
 
 let argv = require('minimist')(process.argv.slice(2));
 
@@ -72,6 +74,11 @@ async function main() {
   
     await loadConfig(file);
     loadedConfig = true;
+  }
+
+  if(argv['load-checkpoint']){
+    let file = argv['load-checkpoint'];
+    await loadCheckpoint(file);
   }
 
   await loadConfig("config.json");
@@ -373,8 +380,20 @@ async function generateWeightedTraits() {
 async function generateImages() {
   let noMoreMatches = 0;
   let images = [];
+  let saveCheckpointPath = `${outputPath}checkpoint_${Date.now()}.json`;
+
+  // load data from last run if it is given
   let id = 0;
-  await generateWeightedTraits();
+  if (Object.keys(checkpointData).length != 0) {
+    id = checkpointData["id"] + 1;
+    weightedTraits = checkpointData["weightedTraits"];
+  }
+  // otherwise start from scratch
+  else {
+    id = 0;
+    await generateWeightedTraits();
+  }
+
   if (config.deleteDuplicates) {
     while (!Object.values(weightedTraits).filter(arr => arr.length == 0).length && noMoreMatches < 20000) {
       let picked = [];
@@ -395,9 +414,15 @@ async function generateImages() {
           remove(weightedTraits[id], picked[i]);
         });
         seen.push(images);
-        const b64 = await mergeImages(images, { Canvas: Canvas, Image: Image });
-        await ImageDataURI.outputFile(b64, outputPath + `${id}.png`);
+        cmd = `ffmpeg -y -i "${images[0]}" -i "${images[1]}" -i "${images[2]}" -i "${images[3]}" -i "${images[4]}" -filter_complex "[0][1] overlay=0:0 [v1]; [v1][2] overlay=0:0 [v2]; [v2][3] overlay=0:0 [v3]; [v3][4] overlay=0:0" ${outputPath + id}.mp4`;
+        await execSync(cmd);
         images = [];
+
+	// save checkpoint data
+	checkpointData["id"] = id;
+	checkpointData["weightedTraits"] = weightedTraits;
+    	await writeFile(saveCheckpointPath, JSON.stringify(checkpointData));
+
         id++;
       }
     }
@@ -409,8 +434,8 @@ async function generateImages() {
         );
       });
       generateMetadataObject(id, images);
-      const b64 = await mergeImages(images, { Canvas: Canvas, Image: Image });
-      await ImageDataURI.outputFile(b64, outputPath + `${id}.png`);
+      cmd = `ffmpeg -y -i "${images[0]}" -i "${images[1]}" -i "${images[2]}" -i "${images[3]}" -i "${images[4]}" -filter_complex "[0][1] overlay=0:0 [v1]; [v1][2] overlay=0:0 [v2]; [v2][3] overlay=0:0 [v3]; [v3][4] overlay=0:0" ${outputPath + id}.mp4`;
+      await execSync(cmd);
       images = [];
       id++;
     }
@@ -452,7 +477,7 @@ function existCombination(contains) {
 
 function generateMetadataObject(id, images) {
   metaData[id] = {
-    name: config.metaData.name + '#' + id,
+    name: config.metaData.name + '# ' + id,
     description: config.metaData.description,
     image: config.imageUrl + id,
     attributes: [],
@@ -480,6 +505,15 @@ async function writeMetadata() {
   }else
   {
     await writeFile(outputPath + 'metadata.json', JSON.stringify(metaData));
+  }
+}
+
+async function loadCheckpoint(file) {
+  try {
+    const data = await readFile(file)
+    checkpointData = JSON.parse(data.toString());
+  } catch (error) {
+    console.log("Could not load checkpoint file.");
   }
 }
 
